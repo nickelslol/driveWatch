@@ -36,7 +36,7 @@ Before you begin, ensure you have the following:
    },
    ```
    
-### 2. Configure Notifications
+### 4. Configure Notifications
 
 Configure the notification settings for Discord, Slack, and Telegram by updating the `NOTIFICATIONS` section in the script’s `CONFIG` object. This will enable the script to send updates to your preferred channels when changes are detected in the monitored Google Drive folder.
 
@@ -70,7 +70,7 @@ Configure the notification settings for Discord, Slack, and Telegram by updating
    }  
    ```
   
-### 6. Create Time-Driven Triggers
+### 5. Create Time-Driven Triggers
 
 To automate the script to run at regular intervals (e.g., every 5 minutes), you need to set up a time-driven trigger using the provided `createTimeDrivenTrigger` function. This trigger ensures that the `checkFolderFilesUpdates` function executes automatically without manual intervention.
 
