@@ -8,8 +8,7 @@ const CONFIG = {
   NOTIFICATIONS: {
     DISCORD: {
       ENABLED: false,
-      WEBHOOK_URL:
-        "DISCORD_WEBHOOK"
+      WEBHOOK_URL: "DISCORD_WEBHOOK"
     },
     SLACK: {
       ENABLED: false,
