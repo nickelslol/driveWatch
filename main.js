@@ -3,21 +3,21 @@
  ****************************************************/
 const CONFIG = {
   DRIVE: {
-    ROOT_FOLDER_ID: "FOLDER_TO_MONITOR_ID"
+    ROOT_FOLDER_ID: "FOLDER_TO_MONITOR_ID" // IMPORTANT: Replace with your actual Google Drive Folder ID
   },
   NOTIFICATIONS: {
     DISCORD: {
       ENABLED: false,
-      WEBHOOK_URL: "DISCORD_WEBHOOK"
+      WEBHOOK_URL: "DISCORD_WEBHOOK" // IMPORTANT: Replace with your actual Discord webhook URL
     },
     SLACK: {
       ENABLED: false,
-      WEBHOOK_URL: "SLACK_WEBHOOK // Replace with your Slack webhook
+      WEBHOOK_URL: "SLACK_WEBHOOK" // IMPORTANT: Replace with your actual Slack webhook URL
     },
     TELEGRAM: {
       ENABLED: false,
-      BOT_TOKEN: "1234567890:ABC-EXAMPLE-TOKEN", // Replace with your Telegram bot token
-      CHAT_ID: "123456789" // Replace with your Telegram chat/group ID
+      BOT_TOKEN: "TELEGRAM_BOT_TOKEN", // IMPORTANT: Replace with your actual Telegram bot token
+      CHAT_ID: "TELEGRAM_CHAT_ID" // IMPORTANT: Replace with your actual Telegram chat/group ID
     }
   }
 };
@@ -25,389 +25,291 @@ const CONFIG = {
 /****************************************************
  *                   Constants                      *
  ****************************************************/
-// Cache related constants
-const CACHE_KEY_FOLDER_IDS = "cachedFolderIds";
-const CACHE_TTL_HOURS = 24;
-const LAST_CHECK_TIME_KEY = "lastCheckTime";
-
-// Trigger related constants
-const TRIGGER_FUNCTION_NAME = "checkFolderFilesUpdates";
+const LAST_CHECK_TIME_KEY      = "lastCheckTime";
+const TRIGGER_FUNCTION_NAME    = "checkFolderFilesUpdates";
 const TRIGGER_FREQUENCY_MINUTES = 5;
 
 /****************************************************
  *               Main Monitoring Logic              *
  ****************************************************/
-/**
- * Checks for folder file updates since the last check, 
- * sends notifications if any files were updated,
- * and updates the lastCheckTime accordingly.
- */
 function checkFolderFilesUpdates() {
   Logger.log("=== Starting checkFolderFilesUpdates ===");
 
-  const properties = PropertiesService.getScriptProperties();
-  const lastCheckTime = properties.getProperty(LAST_CHECK_TIME_KEY);
-  const lastCheckDate = lastCheckTime ? new Date(lastCheckTime) : new Date(0);
+  const props       = PropertiesService.getScriptProperties();
+  const lastStr     = props.getProperty(LAST_CHECK_TIME_KEY);
+  const lastDt      = lastStr ? new Date(lastStr) : new Date(0);
+  Logger.log(`Previous lastCheckTime: ${lastStr || "None"}`);
 
-  Logger.log(`Previous lastCheckTime: ${lastCheckTime || "None"}`);
-
-  // Get folder IDs
-  const folderIds = _getMonitoredFolderIds();
-  if (!folderIds || folderIds.length === 0) {
-    Logger.log("No folder IDs returned from _getMonitoredFolderIds or folder list is empty. Skipping further processing in checkFolderFilesUpdates.");
+  let folderIds;
+  try {
+    // Ensure CONFIG.DRIVE.ROOT_FOLDER_ID is not the placeholder
+    if (CONFIG.DRIVE.ROOT_FOLDER_ID === "FOLDER_TO_MONITOR_ID") {
+      Logger.log("ERROR: ROOT_FOLDER_ID in CONFIG has not been set. Please update the script configuration.");
+      return;
+    }
+    const root = DriveApp.getFolderById(CONFIG.DRIVE.ROOT_FOLDER_ID);
+    folderIds = getAllFolderIdsCached(root);
+    if (!folderIds || folderIds.length === 0) {
+      Logger.log("No folder IDs found or returned from getAllFolderIdsCached. Ensure the root folder is correct and not empty, or check cache.");
+      return;
+    }
+  } catch (e) {
+    Logger.log(`Error fetching root folder or its subfolders: ${e}`);
     return;
   }
 
-  // Collect updated files
+  // Build one single Drive query across all folders
+  const isoDate   = lastDt.toISOString();
+  // Ensure folderIds is not empty before creating the query
+  if (folderIds.length === 0) {
+      Logger.log("Folder ID list is empty, skipping Drive search.");
+      // Potentially update lastCheckTime here if desired, or just return
+      return;
+  }
+  const orParents = folderIds.map(id => `'${id}' in parents`).join(" or ");
+  const query     = `modifiedDate >= '${isoDate}' and trashed = false and (${orParents})`;
+
+  Logger.log(`Executing Drive search with query: ${query}`);
+  const filesIter = DriveApp.searchFiles(query);
+
   const updatedFiles = [];
-  const formattedDate = Utilities.formatDate(
-    lastCheckDate,
-    "UTC",
-    "yyyy-MM-dd'T'HH:mm:ss'Z'"
-  );
-
-  folderIds.forEach(folderId => {
-    const query = `modifiedDate > '${formattedDate}' and '${folderId}' in parents and trashed = false`;
-    try {
-      const files = DriveApp.searchFiles(query);
-      while (files.hasNext()) {
-        const file = files.next();
-        updatedFiles.push({
-          name: file.getName(),
-          url: file.getUrl(),
-          lastUpdated: file.getLastUpdated()
-        });
-      }
-    } catch (error) {
-      Logger.log(`Error searching in folder ${folderId}: ${error}`);
-    }
-  });
-
+  while (filesIter.hasNext()) {
+    const f = filesIter.next();
+    updatedFiles.push({
+      name:        f.getName(),
+      url:         f.getUrl(),
+      lastUpdated: f.getLastUpdated()
+    });
+  }
   Logger.log(`Total updated files found: ${updatedFiles.length}`);
 
-  // If there are new or modified files, update lastCheckTime and notify
   if (updatedFiles.length > 0) {
-    const maxUpdateTime = getMaxUpdateTime(updatedFiles, lastCheckDate);
-    const updatedCheckDate = new Date(maxUpdateTime.getTime() + 1000); // +1s to prevent overlap
-    const formattedCheckDate = Utilities.formatDate(
-      updatedCheckDate,
-      "UTC",
-      "yyyy-MM-dd'T'HH:mm:ss'Z'"
-    );
-
+    // Compute the newest modification time
+    const newest = updatedFiles
+      .map(f => f.lastUpdated)
+      .reduce((a, b) => a > b ? a : b, lastDt);
+    // Advance by one second to avoid duplicate alerts
+    const nextCheck = new Date(newest.getTime() + 1000).toISOString();
     try {
-      properties.setProperty(LAST_CHECK_TIME_KEY, formattedCheckDate);
-      Logger.log(`Updated lastCheckTime to: ${formattedCheckDate}`);
-    } catch (error) {
-      Logger.log(`Error setting lastCheckTime: ${error}`);
+      props.setProperty(LAST_CHECK_TIME_KEY, nextCheck);
+      Logger.log(`Updated lastCheckTime to: ${nextCheck}`);
+    } catch (err) {
+      Logger.log(`Error setting lastCheckTime: ${err}`);
+      // Decide if we should still attempt to send notifications
+      // For now, let's return to avoid sending notifications if state saving fails
       return;
     }
-
-    // Send notifications (all channels)
     sendNotifications(updatedFiles);
   } else {
-    Logger.log("No updated files found; no notifications sent.");
+    Logger.log("No updated files; no notifications sent.");
   }
 
   Logger.log("=== Completed checkFolderFilesUpdates ===");
 }
 
 /****************************************************
- *               Helper / Utility Methods           *
+ *          Cached Drive Folder ID Walker           *
  ****************************************************/
-/**
- * Retrieves folder IDs from cache or fetches them from Drive if the cache is empty.
- *
- * @param {string} rootFolderId The ID of the root folder to monitor.
- * @param {GoogleAppsScript.Cache.CacheService} cacheService The CacheService instance.
- * @return {string[]|null} An array of folder IDs or null if retrieval fails.
- */
-function _getMonitoredFolderIds(rootFolderId = CONFIG.DRIVE.ROOT_FOLDER_ID, cacheService = CacheService) {
-  Logger.log("Starting _getMonitoredFolderIds...");
-  let folderIds = cacheService.getScriptCache().get(CACHE_KEY_FOLDER_IDS);
-  let source = ""; // To track if IDs came from cache or Drive
+function getAllFolderIdsCached(rootFolder) {
+  Logger.log("Starting getAllFolderIdsCached...");
+  const cache = CacheService.getScriptCache();
+  const key   = "allFolderIds_" + CONFIG.DRIVE.ROOT_FOLDER_ID; // Cache key specific to root folder
+  let idsJson = cache.get(key);
 
-  if (!folderIds) {
-    Logger.log("No cached folder IDs found; attempting to fetch from Drive.");
+  if (idsJson) {
+    Logger.log("Successfully retrieved folder IDs from cache for key: " + key);
     try {
-      const rootFolder = DriveApp.getFolderById(rootFolderId);
-      folderIds = getAllFolderIds(rootFolder);
-      cacheService.getScriptCache().put(
-        CACHE_KEY_FOLDER_IDS,
-        JSON.stringify(folderIds),
-        CACHE_TTL_HOURS * 3600
-      );
-      source = "Drive";
-      Logger.log("Successfully fetched and cached folder IDs from Drive.");
-    } catch (error) {
-      Logger.log(`Error fetching/caching folder IDs from Drive: ${error}`);
-      Logger.log("Completed _getMonitoredFolderIds with error.");
-      return null;
+      const ids = JSON.parse(idsJson);
+      if (ids && ids.length > 0) {
+        Logger.log(`Completed getAllFolderIdsCached. Source: cache. IDs found: ${ids.length}`);
+        return ids;
+      } else {
+        Logger.log("Cached folder IDs were empty or invalid. Fetching from Drive.");
+      }
+    } catch (e) {
+      Logger.log(`Error parsing cached folder IDs: ${e}. Fetching from Drive.`);
     }
   } else {
-    source = "cache";
-    Logger.log("Successfully retrieved folder IDs from cache.");
-    folderIds = JSON.parse(folderIds);
+    Logger.log("No cached folder IDs found for key: " + key + "; fetching from Drive.");
   }
 
-  if (folderIds && folderIds.length > 0) {
-    Logger.log(`Completed _getMonitoredFolderIds. Source: ${source}. IDs found: ${folderIds.length}`);
-  } else if (folderIds && folderIds.length === 0) {
-    Logger.log(`Completed _getMonitoredFolderIds. Source: ${source}. No folder IDs found (list is empty).`);
-  } else {
-    // This case should ideally not be reached if error handling above is correct
-    Logger.log(`Completed _getMonitoredFolderIds. Source: ${source}. No folder IDs returned (null).`);
+  // no cache or invalid cache → walk tree
+  const stack     = [rootFolder];
+  const folderIds = [];
+  while (stack.length) {
+    const folder = stack.pop();
+    folderIds.push(folder.getId());
+    const subs = folder.getFolders();
+    while (subs.hasNext()) {
+      stack.push(subs.next());
+    }
   }
+
+  // cache for 5 minutes (300s) so structure changes appear quickly
+  // Only cache if folderIds is not empty
+  if (folderIds.length > 0) {
+    try {
+      cache.put(key, JSON.stringify(folderIds), 300);
+      Logger.log(`Successfully fetched and cached folder IDs from Drive for key: ${key}. IDs count: ${folderIds.length}`);
+    } catch (e) {
+      Logger.log(`Error caching folder IDs: ${e}`);
+    }
+  } else {
+    Logger.log("No folder IDs found while walking the Drive tree. Nothing to cache.");
+  }
+  Logger.log(`Completed getAllFolderIdsCached. Source: Drive. IDs found: ${folderIds.length}`);
   return folderIds;
 }
 
-function clearCachedFolderIds() {
-  Logger.log("=== Starting clearCachedFolderIds ===");
+/**
+ * Utility function to manually clear the folder ID cache for the configured ROOT_FOLDER_ID.
+ * This can be run from the Apps Script editor.
+ */
+function clearMonitoredFolderIdsCache() {
+  const cacheKey = "allFolderIds_" + CONFIG.DRIVE.ROOT_FOLDER_ID;
   try {
-    CacheService.getScriptCache().remove(CACHE_KEY_FOLDER_IDS);
-    Logger.log("Cached folder IDs cleared.");
-  } catch (error) {
-    Logger.log(`Error clearing cached folder IDs: ${error}`);
+    CacheService.getScriptCache().remove(cacheKey);
+    Logger.log(`Cache cleared for key: ${cacheKey}`);
+  } catch (e) {
+    Logger.log(`Error clearing cache for key ${cacheKey}: ${e}`);
   }
-  Logger.log("=== Completed clearCachedFolderIds ===");
 }
 
-/**
- * Returns the latest Date among the updated files or the original last check date.
- */
-function getMaxUpdateTime(files, lastCheckDate) {
-  return files.reduce((latest, file) => {
-    return file.lastUpdated > latest ? file.lastUpdated : latest;
-  }, lastCheckDate);
-}
-
-/**
- * Central entry point for sending notifications to all enabled channels.
- * For each platform, we build a *platform-specific* message, then send.
- */
+/****************************************************
+ *               Notification Plumbing              *
+ ****************************************************/
 function sendNotifications(files) {
-  // Discord
-  if (CONFIG.NOTIFICATIONS.DISCORD.ENABLED) {
-    const discordMessage = buildPlatformMessage(files, "discord");
-    sendDiscordNotification(discordMessage, CONFIG.NOTIFICATIONS.DISCORD.WEBHOOK_URL);
-  }
+  Logger.log("Preparing to send notifications...");
+  const discordMsg  = buildPlatformMessage(files, "discord");
+  const slackMsg    = buildPlatformMessage(files, "slack");
+  const telegramMsg = buildPlatformMessage(files, "telegram");
 
-  // Slack
-  if (CONFIG.NOTIFICATIONS.SLACK.ENABLED) {
-    const slackMessage = buildPlatformMessage(files, "slack");
-    sendSlackNotification(slackMessage, CONFIG.NOTIFICATIONS.SLACK.WEBHOOK_URL);
-  }
+  const platforms = [
+    {
+      name:    "Discord",
+      enabled: CONFIG.NOTIFICATIONS.DISCORD.ENABLED,
+      url:     CONFIG.NOTIFICATIONS.DISCORD.WEBHOOK_URL,
+      placeholderUrl: "DISCORD_WEBHOOK",
+      payload: msg => ({ content: msg }),
+      isOK:    resp => [200, 204].includes(resp.getResponseCode()),
+      message: discordMsg
+    },
+    {
+      name:    "Slack",
+      enabled: CONFIG.NOTIFICATIONS.SLACK.ENABLED,
+      url:     CONFIG.NOTIFICATIONS.SLACK.WEBHOOK_URL,
+      placeholderUrl: "SLACK_WEBHOOK",
+      payload: msg => ({ text: msg }),
+      isOK:    resp => resp.getResponseCode() >= 200 && resp.getResponseCode() < 300,
+      message: slackMsg
+    },
+    {
+      name:    "Telegram",
+      enabled: CONFIG.NOTIFICATIONS.TELEGRAM.ENABLED,
+      url:     (CONFIG.NOTIFICATIONS.TELEGRAM.BOT_TOKEN && CONFIG.NOTIFICATIONS.TELEGRAM.BOT_TOKEN !== "TELEGRAM_BOT_TOKEN") ? `https://api.telegram.org/bot${CONFIG.NOTIFICATIONS.TELEGRAM.BOT_TOKEN}/sendMessage` : null,
+      placeholderUrl: "TELEGRAM_BOT_TOKEN", // Technically token, used to check if it's a placeholder
+      payload: msg => ({
+        chat_id:    CONFIG.NOTIFICATIONS.TELEGRAM.CHAT_ID,
+        text:       msg,
+        parse_mode: "Markdown"
+      }),
+      isOK:    resp => resp.getResponseCode() === 200,
+      message: telegramMsg
+    }
+  ];
 
-  // Telegram
-  if (CONFIG.NOTIFICATIONS.TELEGRAM.ENABLED) {
-    const telegramMessage = buildPlatformMessage(files, "telegram");
-    sendTelegramNotification(
-      telegramMessage,
-      CONFIG.NOTIFICATIONS.TELEGRAM.BOT_TOKEN,
-      CONFIG.NOTIFICATIONS.TELEGRAM.CHAT_ID
-    );
-  }
+  let notificationsSent = 0;
+  platforms.forEach(p => {
+    if (!p.enabled) {
+      // Logger.log(`${p.name} notifications are disabled.`);
+      return;
+    }
+    if (!p.url || p.url === p.placeholderUrl || (p.name === "Telegram" && CONFIG.NOTIFICATIONS.TELEGRAM.BOT_TOKEN === "TELEGRAM_BOT_TOKEN")) {
+      Logger.log(`${p.name} webhook/URL is not configured or is still a placeholder. Skipping.`);
+      return;
+    }
+    if (p.name === "Telegram" && (!CONFIG.NOTIFICATIONS.TELEGRAM.CHAT_ID || CONFIG.NOTIFICATIONS.TELEGRAM.CHAT_ID === "TELEGRAM_CHAT_ID")) {
+        Logger.log("Telegram CHAT_ID is not configured or is still a placeholder. Skipping.");
+        return;
+    }
+
+    Logger.log(`Attempting to send ${p.name} notification.`);
+    sendWithRetry(p.url, p.payload(p.message), p.isOK, p.name);
+    notificationsSent++;
+  });
+  Logger.log(notificationsSent > 0 ? `Finished sending notifications.` : "No notifications were enabled or configured to be sent.");
 }
 
-/**
- * Builds the notification text for a given platform.
- * This way we can customize Slack vs. Discord vs. Telegram syntax.
- */
 function buildPlatformMessage(files, platform) {
   return files
-    .map(file => {
-      // Format each file entry differently per platform:
+    .map(f => {
+      const updated = f.lastUpdated.toLocaleString();
       switch (platform) {
         case "discord":
-          // Discord supports **bold** and [Link](URL) markdown
-          return `**[${file.name}](${file.url})**\nLast Updated: ${file.lastUpdated.toLocaleString()}`;
-
+          // For Discord, message includes literal newlines.
+          return `**[${f.name}](${f.url})**\nLast Updated: ${updated}`;
         case "slack":
-          // Slack uses <URL|Text> for links; bold can be *text*
-          return `*<${file.url}|${file.name}>*\nLast Updated: ${file.lastUpdated.toLocaleString()}`;
-
+          // For Slack, message includes literal newlines.
+          return `*<${f.url}|${f.name}>*\nLast Updated: ${updated}`;
         case "telegram":
-          // Telegram (with parse_mode=Markdown) supports [Text](URL)
-          return `[${file.name}](${file.url})\nLast Updated: ${file.lastUpdated.toLocaleString()}`;
-
+          // For Telegram, message includes literal newlines.
+          return `[${f.name}](${f.url})\nLast Updated: ${updated}`;
         default:
-          // Fallback if needed (plain text)
-          return `${file.name} - ${file.url}\nLast Updated: ${file.lastUpdated.toLocaleString()}`;
+          return `${f.name} - ${f.url}\nLast Updated: ${updated}`;
       }
     })
-    .join("\n\n");
+    .join("\n\n"); // Double newline for paragraph breaks between file entries.
 }
 
-/****************************************************
- *               Platform-Specific Senders          *
- ****************************************************/
-/**
- * Sends a single consolidated notification to Discord 
- * using Markdown-like formatting and exponential backoff for errors.
- */
-function sendDiscordNotification(messageText, webhookUrl) {
-  Logger.log("Sending Discord notification...");
-
-  const payload = JSON.stringify({ content: messageText });
+function sendWithRetry(url, payloadObj, isOK, platformName) {
   const options = {
-    method: "post",
-    contentType: "application/json",
-    payload: payload,
+    method:           "post",
+    contentType:      "application/json",
+    payload:          JSON.stringify(payloadObj),
     muteHttpExceptions: true
   };
-
-  let attempt = 0;
-  const maxRetries = 3;
-  while (attempt < maxRetries) {
-    attempt++;
+  for (let attempt = 1; attempt <= 3; attempt++) {
     try {
-      const response = UrlFetchApp.fetch(webhookUrl, options);
-      const code = response.getResponseCode();
-      if (code === 200 || code === 204) {
-        Logger.log("Discord notification sent successfully.");
+      Logger.log(`Sending to ${platformName} (Attempt ${attempt})...`);
+      const resp = UrlFetchApp.fetch(url, options);
+      if (isOK(resp)) {
+        Logger.log(`${platformName} notification sent successfully (Code: ${resp.getResponseCode()}).`);
         return;
       }
-      throw new Error(`Discord responded with status: ${code}`);
-    } catch (error) {
-      Logger.log(`Attempt ${attempt} failed: ${error}`);
-      if (attempt < maxRetries) {
+      // Log response text if available and not OK for more details
+      const responseText = resp.getContentText();
+      throw new Error(`${platformName} status ${resp.getResponseCode()}. Response: ${responseText}`);
+    } catch (e) {
+      Logger.log(`Attempt ${attempt} to send ${platformName} failed: ${e}`);
+      if (attempt < 3) {
         const sleepTime = Math.pow(2, attempt) * 1000;
-        Logger.log(`Retrying in ${sleepTime} ms...`);
+        Logger.log(`Retrying ${platformName} in ${sleepTime} ms...`);
         Utilities.sleep(sleepTime);
       } else {
-        Logger.log(`All retries failed. Last error: ${error}`);
-      }
-    }
-  }
-}
-
-/**
- * Sends a single consolidated notification to Slack 
- * using a Slack incoming webhook. Also uses exponential backoff.
- */
-function sendSlackNotification(messageText, webhookUrl) {
-  Logger.log("Sending Slack notification...");
-
-  const payload = JSON.stringify({ text: messageText });
-  const options = {
-    method: "post",
-    contentType: "application/json",
-    payload: payload,
-    muteHttpExceptions: true
-  };
-
-  let attempt = 0;
-  const maxRetries = 3;
-  while (attempt < maxRetries) {
-    attempt++;
-    try {
-      const response = UrlFetchApp.fetch(webhookUrl, options);
-      const code = response.getResponseCode();
-      if (code >= 200 && code < 300) {
-        Logger.log("Slack notification sent successfully.");
-        return;
-      }
-      throw new Error(`Slack responded with status: ${code}`);
-    } catch (error) {
-      Logger.log(`Attempt ${attempt} failed: ${error}`);
-      if (attempt < maxRetries) {
-        const sleepTime = Math.pow(2, attempt) * 1000;
-        Logger.log(`Retrying in ${sleepTime} ms...`);
-        Utilities.sleep(sleepTime);
-      } else {
-        Logger.log(`All retries failed. Last error: ${error}`);
-      }
-    }
-  }
-}
-
-/**
- * Sends a single consolidated notification to Telegram 
- * using the Bot API (sendMessage endpoint). Also uses exponential backoff.
- */
-function sendTelegramNotification(messageText, botToken, chatId) {
-  Logger.log("Sending Telegram notification...");
-
-  const telegramUrl = `https://api.telegram.org/bot${botToken}/sendMessage`;
-  // We set parse_mode to "Markdown" so [text](URL) is recognized
-  const payload = {
-    chat_id: chatId,
-    text: messageText,
-    parse_mode: "Markdown"
-  };
-
-  const options = {
-    method: "post",
-    contentType: "application/json",
-    payload: JSON.stringify(payload),
-    muteHttpExceptions: true
-  };
-
-  let attempt = 0;
-  const maxRetries = 3;
-  while (attempt < maxRetries) {
-    attempt++;
-    try {
-      const response = UrlFetchApp.fetch(telegramUrl, options);
-      const code = response.getResponseCode();
-      if (code === 200) {
-        Logger.log("Telegram notification sent successfully.");
-        return;
-      }
-      throw new Error(`Telegram responded with status: ${code}`);
-    } catch (error) {
-      Logger.log(`Attempt ${attempt} failed: ${error}`);
-      if (attempt < maxRetries) {
-        const sleepTime = Math.pow(2, attempt) * 1000;
-        Logger.log(`Retrying in ${sleepTime} ms...`);
-        Utilities.sleep(sleepTime);
-      } else {
-        Logger.log(`All retries failed. Last error: ${error}`);
+        Logger.log(`All retries for ${platformName} exhausted. Last error: ${e}`);
       }
     }
   }
 }
 
 /****************************************************
- *       Recursive Drive Folder ID Fetcher          *
+ *       Trigger Creation / Management              *
  ****************************************************/
-/**
- * Recursively gathers IDs from a folder and its subfolders.
- */
-function getAllFolderIds(folder) {
-  const folderIds = [folder.getId()];
-  const subfolders = folder.getFolders();
-  while (subfolders.hasNext()) {
-    const subfolder = subfolders.next();
-    folderIds.push(...getAllFolderIds(subfolder));
-  }
-  return folderIds;
-}
-
-/****************************************************
- *       Time-driven Trigger Setup                  *
- ****************************************************/
-/**
- * Creates a time-driven trigger to run `checkFolderFilesUpdates()` 
- * every configured number of minutes (from TRIGGER_FREQUENCY_MINUTES).
- */
 function createTimeDrivenTrigger() {
-  const existingTriggers = ScriptApp.getProjectTriggers();
-
-  // Remove any old trigger for the same function to avoid duplicates
-  existingTriggers.forEach(trigger => {
-    if (trigger.getHandlerFunction() === TRIGGER_FUNCTION_NAME) {
-      ScriptApp.deleteTrigger(trigger);
+  const triggers = ScriptApp.getProjectTriggers();
+  let existingTrigger = false;
+  triggers.forEach(t => {
+    if (t.getHandlerFunction() === TRIGGER_FUNCTION_NAME) {
+      Logger.log(`Found existing trigger for ${TRIGGER_FUNCTION_NAME}. Deleting it.`);
+      ScriptApp.deleteTrigger(t);
+      existingTrigger = true;
     }
   });
 
-  // Create a new one
   ScriptApp.newTrigger(TRIGGER_FUNCTION_NAME)
     .timeBased()
     .everyMinutes(TRIGGER_FREQUENCY_MINUTES)
     .create();
 
-  Logger.log(
-    `New trigger created to run every ${TRIGGER_FREQUENCY_MINUTES} minutes.`
-  );
+  Logger.log(`New trigger created to run "${TRIGGER_FUNCTION_NAME}" every ${TRIGGER_FREQUENCY_MINUTES} minutes. Was existing trigger replaced: ${existingTrigger}`);
 }

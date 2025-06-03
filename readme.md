@@ -33,11 +33,12 @@ It is crucial to keep your webhook URLs (Discord, Slack) and your Telegram Bot T
    - Replace `”FOLDER_TO_MONITOR_ID”` in `ROOT_FOLDER_ID` with the ID of the Google Drive folder you want to monitor.
    - To find the folder ID, navigate to the folder in Google Drive and copy the string after `folders/` in the URL.
 
-   ```
+   ```javascript
    DRIVE: {
-     ROOT_FOLDER_ID: “YOUR_ROOT_FOLDER_ID_HERE” // IMPORTANT: Replace with your actual Google Drive folder ID
+     ROOT_FOLDER_ID: "FOLDER_TO_MONITOR_ID" // IMPORTANT: Replace with your actual Google Drive Folder ID
    },
    ```
+   Make sure to replace `"FOLDER_TO_MONITOR_ID"` with the actual ID of the Google Drive folder you wish to monitor. Failure to do so will result in an error, and the script will not run.
    
 ### 4. Configure Notifications
 
@@ -59,19 +60,20 @@ Configure the notification settings for Discord, Slack, and Telegram by updating
    NOTIFICATIONS: {
      DISCORD: {
        ENABLED: false, // Set to true to enable Discord notifications
-       WEBHOOK_URL: "YOUR_DISCORD_WEBHOOK_URL" // IMPORTANT: Replace with your actual Discord webhook URL
+       WEBHOOK_URL: "DISCORD_WEBHOOK" // IMPORTANT: Replace with your actual Discord webhook URL
      },
      SLACK: {
        ENABLED: false, // Set to true to enable Slack notifications
-       WEBHOOK_URL: "YOUR_SLACK_WEBHOOK_URL" // IMPORTANT: Replace with your actual Slack webhook URL
+       WEBHOOK_URL: "SLACK_WEBHOOK" // IMPORTANT: Replace with your actual Slack webhook URL
      },
      TELEGRAM: {
        ENABLED: false, // Set to true to enable Telegram notifications
-       BOT_TOKEN: "YOUR_TELEGRAM_BOT_TOKEN", // IMPORTANT: Replace with your actual Telegram bot token
-       CHAT_ID: "YOUR_TELEGRAM_CHAT_ID" // IMPORTANT: Replace with your actual Telegram chat/group ID
+       BOT_TOKEN: "TELEGRAM_BOT_TOKEN", // IMPORTANT: Replace with your actual Telegram bot token
+       CHAT_ID: "TELEGRAM_CHAT_ID" // IMPORTANT: Replace with your actual Telegram chat/group ID
      }
-   }  
+   }
    ```
+   Ensure you replace placeholder values like `"DISCORD_WEBHOOK"`, `"SLACK_WEBHOOK"`, `"TELEGRAM_BOT_TOKEN"`, and `"TELEGRAM_CHAT_ID"` with your actual service credentials. The script will skip sending notifications to platforms where the webhook/token is still set to its placeholder value.
   
 ### 5. Create Time-Driven Triggers
 
@@ -125,27 +127,28 @@ To automate the script to run at regular intervals (e.g., every 5 minutes), you 
 ## Advanced Usage
 
 ### Clearing Folder Cache
-The script caches the list of folder IDs for 24 hours (by default, defined by `CACHE_TTL_HOURS` in `main.js`). If you add new subfolders to your monitored root folder and want them to be included in the monitoring immediately, you can manually run the `clearCachedFolderIds` function from the script editor.
+The script caches the list of folder IDs for the monitored root folder and its subfolders for 5 minutes (this duration is set within the `getAllFolderIdsCached` function in `main.js`). This is done to improve performance and reduce the number of direct calls to Google Drive. If you add new subfolders to your monitored root folder and want them to be included in the monitoring immediately (before the 5-minute cache expires), you can manually run the `clearMonitoredFolderIdsCache` function from the script editor.
 1. Open your script in the Google Apps Script editor.
-2. From the function dropdown menu at the top, select `clearCachedFolderIds`.
+2. From the function dropdown menu at the top (it might say "Select function"), select `clearMonitoredFolderIdsCache`.
 3. Click the **Run** ▶️ button.
-This will clear the cache, and the script will fetch the updated folder list on its next run.
+This will clear the cache specifically for the `ROOT_FOLDER_ID` currently configured in your script. The script will then fetch and re-cache the updated folder list on its next scheduled run or if `checkFolderFilesUpdates` is run manually.
 
 ### Customizing Notifications
-Notification messages can be customized by editing the `buildPlatformMessage` function in `main.js`. This allows you to change the formatting and content for Discord, Slack, and Telegram messages to better suit your needs.
+Notification messages can be customized by editing the `buildPlatformMessage` function in `main.js`. This allows you to change the formatting and content for Discord, Slack, and Telegram messages to better suit your needs. The `sendWithRetry` function handles the actual sending logic, including retries.
 
 ## Troubleshooting
 
 ### Notifications not sending:
-*   **Configuration Check:** Double-check your webhook URLs, bot token, and chat ID in the `CONFIG` section of `main.js`. Ensure they are correct and do not contain typos.
+*   **Configuration Check:** Double-check your webhook URLs, bot token, and chat ID in the `CONFIG` section of `main.js`. Ensure they are correct, do not contain typos, and are not still the placeholder values (e.g., `"DISCORD_WEBHOOK"`). The script logs will indicate if notifications are skipped due to placeholder configurations.
 *   **Enabled Flag:** Verify that the respective `ENABLED` flag (e.g., `CONFIG.NOTIFICATIONS.DISCORD.ENABLED`) is set to `true` for the platform you are trying to use.
-*   **Google Apps Script Logs:** Check Google Apps Script logs for any error messages. In the script editor, go to "View" > "Logs" or click the "Execution log" icon (looks like a list or document). These logs often provide clues about what went wrong (e.g., invalid webhook URL, permission issues).
+*   **Google Apps Script Logs:** Check Google Apps Script logs for any error messages. In the script editor, go to "View" > "Logs" or "Executions" (or click the "Execution log" icon). These logs often provide clues about what went wrong (e.g., invalid webhook URL, permission issues, errors from the notification service).
 *   **Webhook/Bot Setup:** Ensure your Discord/Slack webhook is correctly set up in your server/channel and that your Telegram bot is a member of the target chat/group and has permission to send messages.
 
 ### Script errors during execution:
-*   **Review Logs:** Always review the error messages in the Google Apps Script logs for details on the specific error.
-*   **Folder ID & Access:** Ensure the `ROOT_FOLDER_ID` in `main.js` is correct. Also, verify that the Google account running the script has at least view access to this folder and all its subfolders.
-*   **Service Quotas:** If the script processes a very large number of files or folders, or runs very frequently, it might hit Google Apps Script service quotas or limitations (e.g., URL Fetch daily quota, trigger limitations). Review the [Google Apps Script quotas documentation](https://developers.google.com/apps-script/guides/services/quotas) if you suspect this.
+*   **ROOT_FOLDER_ID Not Set:** Ensure the `ROOT_FOLDER_ID` in the `CONFIG` section of `main.js` has been replaced with your actual Google Drive folder ID. The script will log an error and refuse to run if it's still the default placeholder `"FOLDER_TO_MONITOR_ID"`.
+*   **Review Logs:** Always review the error messages in the Google Apps Script logs for details on the specific error. This is the most important step for diagnosing issues.
+*   **Folder ID & Access:** Verify that the `ROOT_FOLDER_ID` in `main.js` is a valid folder ID and that the Google account running the script has at least view access to this folder and all its subfolders.
+*   **Service Quotas:** If the script processes a very large number of files or folders, or runs very frequently, it might hit Google Apps Script service quotas or limitations (e.g., URL Fetch daily quota, trigger limitations, cache service limits). Review the [Google Apps Script quotas documentation](https://developers.google.com/apps-script/guides/services/quotas) if you suspect this.
 *   **Recent Script Changes:** If you recently modified the script, an error might have been introduced. Try reverting to a previously working version if possible, or carefully review your changes.
 
 ### Trigger not running:
