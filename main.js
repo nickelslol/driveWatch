@@ -51,24 +51,11 @@ function checkFolderFilesUpdates() {
 
   Logger.log(`Previous lastCheckTime: ${lastCheckTime || "None"}`);
 
-  // Get or fetch/cached folder IDs
-  let folderIds = CacheService.getScriptCache().get(CACHE_KEY_FOLDER_IDS);
-  if (!folderIds) {
-    Logger.log("No cached folder IDs found; fetching now.");
-    try {
-      const rootFolder = DriveApp.getFolderById(CONFIG.DRIVE.ROOT_FOLDER_ID);
-      folderIds = getAllFolderIds(rootFolder);
-      CacheService.getScriptCache().put(
-        CACHE_KEY_FOLDER_IDS,
-        JSON.stringify(folderIds),
-        CACHE_TTL_HOURS * 3600
-      );
-    } catch (error) {
-      Logger.log(`Error fetching/caching folder IDs: ${error}`);
-      return;
-    }
-  } else {
-    folderIds = JSON.parse(folderIds);
+  // Get folder IDs
+  const folderIds = _getMonitoredFolderIds();
+  if (!folderIds || folderIds.length === 0) {
+    Logger.log("No folder IDs returned from _getMonitoredFolderIds or folder list is empty. Skipping further processing in checkFolderFilesUpdates.");
+    return;
   }
 
   // Collect updated files
@@ -128,6 +115,52 @@ function checkFolderFilesUpdates() {
 /****************************************************
  *               Helper / Utility Methods           *
  ****************************************************/
+/**
+ * Retrieves folder IDs from cache or fetches them from Drive if the cache is empty.
+ *
+ * @param {string} rootFolderId The ID of the root folder to monitor.
+ * @param {GoogleAppsScript.Cache.CacheService} cacheService The CacheService instance.
+ * @return {string[]|null} An array of folder IDs or null if retrieval fails.
+ */
+function _getMonitoredFolderIds(rootFolderId = CONFIG.DRIVE.ROOT_FOLDER_ID, cacheService = CacheService) {
+  Logger.log("Starting _getMonitoredFolderIds...");
+  let folderIds = cacheService.getScriptCache().get(CACHE_KEY_FOLDER_IDS);
+  let source = ""; // To track if IDs came from cache or Drive
+
+  if (!folderIds) {
+    Logger.log("No cached folder IDs found; attempting to fetch from Drive.");
+    try {
+      const rootFolder = DriveApp.getFolderById(rootFolderId);
+      folderIds = getAllFolderIds(rootFolder);
+      cacheService.getScriptCache().put(
+        CACHE_KEY_FOLDER_IDS,
+        JSON.stringify(folderIds),
+        CACHE_TTL_HOURS * 3600
+      );
+      source = "Drive";
+      Logger.log("Successfully fetched and cached folder IDs from Drive.");
+    } catch (error) {
+      Logger.log(`Error fetching/caching folder IDs from Drive: ${error}`);
+      Logger.log("Completed _getMonitoredFolderIds with error.");
+      return null;
+    }
+  } else {
+    source = "cache";
+    Logger.log("Successfully retrieved folder IDs from cache.");
+    folderIds = JSON.parse(folderIds);
+  }
+
+  if (folderIds && folderIds.length > 0) {
+    Logger.log(`Completed _getMonitoredFolderIds. Source: ${source}. IDs found: ${folderIds.length}`);
+  } else if (folderIds && folderIds.length === 0) {
+    Logger.log(`Completed _getMonitoredFolderIds. Source: ${source}. No folder IDs found (list is empty).`);
+  } else {
+    // This case should ideally not be reached if error handling above is correct
+    Logger.log(`Completed _getMonitoredFolderIds. Source: ${source}. No folder IDs returned (null).`);
+  }
+  return folderIds;
+}
+
 function clearCachedFolderIds() {
   Logger.log("=== Starting clearCachedFolderIds ===");
   try {
